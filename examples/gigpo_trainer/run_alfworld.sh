@@ -1,15 +1,15 @@
 set -x
 ENGINE=${1:-vllm}
-export VLLM_ATTENTION_BACKEND=XFORMERS
 
-num_cpus_per_env_worker=0.1 # The CPU resource allocated for each environment worker. If you want to use less CPU resources, you can decrease this value.
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 
+num_cpus_per_env_worker=0.1 
+export CUDA_VISIBLE_DEVICES=0,3,4,6
 train_data_size=16
 val_data_size=128
 group_size=8
-mode="mean_std_norm" # "mean_norm" or "mean_std_norm"
+mode="mean_std_norm" 
 
-# We only use data preparation to indicate the modality and the data size.
 python3 -m examples.data_preprocess.prepare \
     --mode 'text' \
     --train_data_size $train_data_size \
@@ -38,9 +38,11 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
+    `# 🚀 提速点 3：保持 TP=1，让 4 张卡做纯数据并行（DP=4），消除切分张量的卡间通信延迟` \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=$ENGINE \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    `# 🚀 提速点 4：设为 0.4，给 vLLM 留 32GB（1.5B模型搓绰绰有余），给 PyTorch 留 48GB 跑无 checkpoint 的训练` \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
@@ -63,7 +65,8 @@ python3 -m verl.trainer.main_ppo \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_alfworld' \
     trainer.experiment_name='gigpo_qwen2.5_1.5b' \
-    trainer.n_gpus_per_node=2 \
+    `# 🚀 提速点 5：因为 CUDA_VISIBLE_DEVICES 暴露了 4 张卡，这里必须对应改为 4` \
+    trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \
