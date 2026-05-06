@@ -39,8 +39,10 @@ if __name__ == '__main__':
     We do NOT use the data in 'hiyouga/geometry3k', instead we only use it to indicate the modality and the data size.
     See details: https://github.com/langfengQ/verl-agent?tab=readme-ov-file#2-data-preparation
     """
-
+  
+    
     dataset = datasets.load_dataset(data_source)
+    
 
     train_dataset = dataset['train'].select(range(args.train_data_size))
     test_dataset = dataset['test'].select(range(args.val_data_size))
