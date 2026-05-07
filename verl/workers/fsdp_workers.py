@@ -624,6 +624,8 @@ class ActorRolloutRefWorker(Worker):
             lr = self.actor_lr_scheduler.get_last_lr()[0]
             metrics["actor/lr"] = lr
             self.actor_lr_scheduler.step()
+            if self._is_lora and self._is_rollout and hasattr(self, "rollout_sharding_manager"):
+                self.rollout_sharding_manager.mark_params_dirty()
 
             # TODO: here, we should return all metrics
             output = DataProto(meta_info={"metrics": metrics})

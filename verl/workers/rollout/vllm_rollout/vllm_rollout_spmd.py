@@ -312,10 +312,14 @@ class vLLMRollout(BaseRollout):
 
         lora_requests = None
         if self.lora_kwargs:
-            lora_int_ids = list(self.inference_engine.llm_engine.list_loras())
-            if len(lora_int_ids) > 0:
-                lora_int_id=lora_int_ids[0]
-                lora_requests = [LoRARequest(lora_name=f"{lora_int_id}",lora_int_id=lora_int_id,lora_path="/simon-stub-path")] * batch_size
+            lora_int_id = getattr(self.inference_engine, "verl_latest_lora_int_id", None)
+            if lora_int_id is None:
+                lora_int_id = getattr(self.inference_engine.llm_engine, "verl_latest_lora_int_id", None)
+            if lora_int_id is None:
+                lora_int_ids = list(self.inference_engine.llm_engine.list_loras())
+                lora_int_id = lora_int_ids[-1] if len(lora_int_ids) > 0 else None
+            if lora_int_id is not None:
+                lora_requests = [LoRARequest(lora_name=f"{lora_int_id}", lora_int_id=lora_int_id, lora_path="/simon-stub-path")] * batch_size
 
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**kwargs):

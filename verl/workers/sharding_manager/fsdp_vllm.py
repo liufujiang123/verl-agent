@@ -107,8 +107,13 @@ class FSDPVLLMShardingManager(BaseShardingManager):
             self.gen_random_states = None
 
         self.base_sync_done: bool = 'dummy' not in load_format
+        self._lora_params_dirty = True
+        self._latest_lora_int_id = None
         if is_version_ge(pkg='vllm', minver='0.7.3'):
             VLLMHijack.hijack()
+
+    def mark_params_dirty(self):
+        self._lora_params_dirty = True
 
     @GPUMemoryLogger(role="fsdp vllm sharding_manager", logger=logger)
     def __enter__(self):
@@ -166,12 +171,24 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         # vllm: https://github.com/vllm-project/vllm/blob/v0.7.3/vllm/device_allocator/cumem.py#L103
         get_torch_device().empty_cache()
 
+        is_peft_model = isinstance(self.module._fsdp_wrapped_module, PeftModel)
+        skip_lora_sync = is_peft_model and self.base_sync_done and not self._lora_params_dirty and self._latest_lora_int_id is not None
+        if skip_lora_sync and hasattr(self.inference_engine.llm_engine, "list_loras"):
+            skip_lora_sync = self._latest_lora_int_id in self.inference_engine.llm_engine.list_loras()
+            self._lora_params_dirty = not skip_lora_sync
+
         log_gpu_memory_usage("Before state_dict() in sharding manager memory", logger=logger)
-        if self.offload_param:
+        if self.offload_param and not skip_lora_sync:
             load_fsdp_model_to_gpu(self.module)
 
         peft_config = None
-        if isinstance(self.module._fsdp_wrapped_module, PeftModel):
+        params = None
+        if skip_lora_sync:
+            if self.inference_engine is not None:
+                setattr(self.inference_engine, "verl_latest_lora_int_id", self._latest_lora_int_id)
+                if hasattr(self.inference_engine, "llm_engine"):
+                    setattr(self.inference_engine.llm_engine, "verl_latest_lora_int_id", self._latest_lora_int_id)
+        elif is_peft_model:
             peft_config = self.module._fsdp_wrapped_module.peft_config.get('default', None)
             params = __collect_lora_params()
         else:
@@ -185,9 +202,11 @@ class FSDPVLLMShardingManager(BaseShardingManager):
             "0.5.4",
             "0.6.3",
         ):
-            self.inference_engine.sync_model_weights(params, load_format=load_format)
+            if params is not None:
+                self.inference_engine.sync_model_weights(params, load_format=load_format)
             log_gpu_memory_usage("After sync model weights in sharding manager", logger=logger)
-            del params
+            if params is not None:
+                del params
         else:
             if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:
                 self.inference_engine.wake_up(tags=["weights"])
@@ -195,10 +214,11 @@ class FSDPVLLMShardingManager(BaseShardingManager):
                 self.inference_engine.wake_up()
 
             # update model params
-            self.update_params(params, peft_config=peft_config)
+            if params is not None:
+                self.update_params(params, peft_config=peft_config)
+                del params
             log_gpu_memory_usage("After sync model weights in sharding manager", logger=logger)
-            del params
-            if self.offload_param:
+            if self.offload_param and not skip_lora_sync:
                 offload_fsdp_model_to_cpu(self.module)
             get_torch_device().empty_cache()
 
@@ -263,6 +283,11 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         model = self.model_runner.model
         if peft_config:
             if self.base_sync_done:
+                if self._latest_lora_int_id is not None and hasattr(self.inference_engine.llm_engine, "remove_lora"):
+                    try:
+                        self.inference_engine.llm_engine.remove_lora(self._latest_lora_int_id)
+                    except Exception as e:
+                        logger.debug(f"Skip removing stale LoRA {self._latest_lora_int_id}: {e}")
                 lora_int_id=int(time.time_ns() % 0x7FFFFFFF)
                 lora_reqest = TensorLoRARequest(
                     lora_name=f"{lora_int_id}",
@@ -272,6 +297,10 @@ class FSDPVLLMShardingManager(BaseShardingManager):
                     lora_tensors=updated_params,
                 )
                 self.inference_engine.llm_engine.add_lora(lora_reqest)
+                self._latest_lora_int_id = lora_int_id
+                self._lora_params_dirty = False
+                setattr(self.inference_engine, "verl_latest_lora_int_id", lora_int_id)
+                setattr(self.inference_engine.llm_engine, "verl_latest_lora_int_id", lora_int_id)
                 logger.info(f"vLLM load weights, loaded_params: {len(updated_params)}")
                 return
             else:
@@ -289,4 +318,6 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         loaded_params = model.load_weights(((name, param.to(device, non_blocking=True).full_tensor() if isinstance(param, DTensor) else param) for name, param in updated_params.items()))
 
         self.base_sync_done = True
+        if peft_config:
+            self._lora_params_dirty = True
         logger.info(f"vLLM load weights, loaded_params: {len(loaded_params) if loaded_params else -1}")

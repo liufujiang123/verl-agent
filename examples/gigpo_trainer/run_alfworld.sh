@@ -4,7 +4,7 @@ ENGINE=${1:-vllm}
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 
 num_cpus_per_env_worker=0.1 
-export CUDA_VISIBLE_DEVICES=0,3,4,6
+export CUDA_VISIBLE_DEVICES=1,2,3,4
 train_data_size=16
 val_data_size=128
 group_size=8
