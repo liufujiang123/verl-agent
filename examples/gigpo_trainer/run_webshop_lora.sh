@@ -23,7 +23,7 @@ python3 -m verl.trainer.main_ppo \
     data.train_batch_size=$train_data_size \
     data.val_batch_size=$val_data_size \
     data.max_prompt_length=4096 \
-    data.max_response_length=256 \
+    data.max_response_length=512 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.return_raw_chat=True \
@@ -67,7 +67,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_agent_webshop' \
-    trainer.experiment_name='gigpo_qwen2.5_1.5b_lora' \
+    trainer.experiment_name='gigpo_qwen2.5_1.5b_lora_webshop' \
     trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.save_freq=150 \
