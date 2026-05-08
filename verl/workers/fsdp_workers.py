@@ -135,6 +135,7 @@ class ActorRolloutRefWorker(Worker):
         self._is_actor = self.role in ["actor", "actor_rollout", "actor_rollout_ref"]
         self._is_rollout = self.role in ["rollout", "actor_rollout", "actor_rollout_ref"]
         self._is_ref = self.role in ["ref", "actor_rollout_ref"]
+        self._rollout_sharding_manager_session_active = False
 
         self._is_offload_param = False
         self._is_offload_optimizer = False
@@ -642,6 +643,36 @@ class ActorRolloutRefWorker(Worker):
 
         return output
 
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def begin_rollout_session(self):
+        assert self._is_rollout
+        if self._rollout_sharding_manager_session_active:
+            return
+        self.rollout_sharding_manager.__enter__()
+        self._rollout_sharding_manager_session_active = True
+        log_gpu_memory_usage("After beginning rollout session", logger=logger)
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def end_rollout_session(self):
+        assert self._is_rollout
+        if not self._rollout_sharding_manager_session_active:
+            return
+        self._rollout_sharding_manager_session_active = False
+        self.rollout_sharding_manager.__exit__(None, None, None)
+        get_torch_device().empty_cache()
+        log_gpu_memory_usage("After ending rollout session", logger=logger)
+
+    def _generate_sequences_with_active_rollout(self, prompts: DataProto):
+        log_gpu_memory_usage("After entering rollout sharding manager", logger=logger)
+
+        prompts = self.rollout_sharding_manager.preprocess_data(prompts)
+        output = self.rollout.generate_sequences(prompts=prompts)
+
+        log_gpu_memory_usage("After rollout generation", logger=logger)
+
+        output = self.rollout_sharding_manager.postprocess_data(output)
+        return output
+
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def generate_sequences(self, prompts: DataProto):
         # Support all hardwares
@@ -654,20 +685,17 @@ class ActorRolloutRefWorker(Worker):
             "pad_token_id": self.generation_config.pad_token_id if self.generation_config is not None else self.tokenizer.pad_token_id,
         }
         prompts.meta_info.update(meta_info)
-        with self.rollout_sharding_manager:
-            log_gpu_memory_usage("After entering rollout sharding manager", logger=logger)
 
-            prompts = self.rollout_sharding_manager.preprocess_data(prompts)
-            output = self.rollout.generate_sequences(prompts=prompts)
-            
-            log_gpu_memory_usage("After rollout generation", logger=logger)
-
-            output = self.rollout_sharding_manager.postprocess_data(output)
+        if self._rollout_sharding_manager_session_active:
+            output = self._generate_sequences_with_active_rollout(prompts)
+        else:
+            with self.rollout_sharding_manager:
+                output = self._generate_sequences_with_active_rollout(prompts)
 
         output = output.to("cpu")
 
-        # clear kv cache
-        get_torch_device().empty_cache()
+        if not self._rollout_sharding_manager_session_active:
+            get_torch_device().empty_cache()
         return output
 
 

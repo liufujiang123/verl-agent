@@ -500,40 +500,48 @@ class TrajectoryCollector:
         Returns:
             DataProto: Final collected trajectory data with metadata.
         """
-        if is_train:
-            gen_batch = gen_batch.repeat(repeat_times=self.config.env.rollout.n, interleave=True)
-            
-        # Initial observations from the environment
-        if self.config.algorithm.filter_groups.enable and is_train:
-            # Dynamic Sampling (for DAPO and Dynamic GiGPO)
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, totoal_tool_callings = \
-                self.dynamic_multi_turn_loop(
-                gen_batch=gen_batch,
-                actor_rollout_wg=actor_rollout_wg,
-                envs=envs,
-            )
-        else:
-            # Vanilla Sampling   
-            total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, totoal_tool_callings = \
-                self.vanilla_multi_turn_loop(
-                gen_batch=gen_batch,
-                actor_rollout_wg=actor_rollout_wg,
-                envs=envs,
-            )
-        assert len(total_batch_list) == len(total_episode_rewards)
-        assert len(total_batch_list) == len(total_episode_lengths)
-        assert len(total_batch_list) == len(total_traj_uid)
-        assert len(total_batch_list) == len(totoal_tool_callings)
-        
+        rollout_session_started = False
+        if hasattr(actor_rollout_wg, "begin_rollout_session"):
+            actor_rollout_wg.begin_rollout_session()
+            rollout_session_started = True
 
-        # Create trajectory data
-        gen_batch_output: DataProto = self.gather_rollout_data(
-            total_batch_list=total_batch_list,
-            episode_rewards=total_episode_rewards,
-            episode_lengths=total_episode_lengths,
-            success=total_success,
-            traj_uid=total_traj_uid,
-            tool_callings=totoal_tool_callings,
-        )
-        
-        return gen_batch_output
+        try:
+            if is_train:
+                gen_batch = gen_batch.repeat(repeat_times=self.config.env.rollout.n, interleave=True)
+
+            # Initial observations from the environment
+            if self.config.algorithm.filter_groups.enable and is_train:
+                # Dynamic Sampling (for DAPO and Dynamic GiGPO)
+                total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, totoal_tool_callings = \
+                    self.dynamic_multi_turn_loop(
+                    gen_batch=gen_batch,
+                    actor_rollout_wg=actor_rollout_wg,
+                    envs=envs,
+                )
+            else:
+                # Vanilla Sampling
+                total_batch_list, total_episode_rewards, total_episode_lengths, total_success, total_traj_uid, totoal_tool_callings = \
+                    self.vanilla_multi_turn_loop(
+                    gen_batch=gen_batch,
+                    actor_rollout_wg=actor_rollout_wg,
+                    envs=envs,
+                )
+            assert len(total_batch_list) == len(total_episode_rewards)
+            assert len(total_batch_list) == len(total_episode_lengths)
+            assert len(total_batch_list) == len(total_traj_uid)
+            assert len(total_batch_list) == len(totoal_tool_callings)
+
+            # Create trajectory data
+            gen_batch_output: DataProto = self.gather_rollout_data(
+                total_batch_list=total_batch_list,
+                episode_rewards=total_episode_rewards,
+                episode_lengths=total_episode_lengths,
+                success=total_success,
+                traj_uid=total_traj_uid,
+                tool_callings=totoal_tool_callings,
+            )
+
+            return gen_batch_output
+        finally:
+            if rollout_session_started:
+                actor_rollout_wg.end_rollout_session()
